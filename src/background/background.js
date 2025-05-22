@@ -73,26 +73,112 @@ async function checkSimHash(hostname, html) {
 
 // CSV IMPORT (One-time operation during installation of extension)
 async function importCSV() {
-	// TODO: use bundled csv instead
-	const mockData = [
-		{ url: "phishingsite.com", html: "<html>fake</html>", result: 1 },
-		{ url: "google.com", html: "<html>real</html>", result: 0 },
-		{ url: "duckduckgo.com", html: "<html>fake malicious</html>", result: 1 }
-		// ...
-	];
+  try {
+    // Fetch the CSV file (bundled with extension)
+    const csvUrl = chrome.runtime.getURL('data/transformed_data.csv');
+    const response = await fetch(csvUrl);
+    if (!response.ok) throw new Error('Failed to fetch CSV');
+    
+    const csvText = await response.text();
 
-	const db = await initDB();
-	const tx = db.transaction([URL_STORE, HTML_STORE], 'readwrite');
+    // Parse CSV text
+    const parsedData = await parseCSV(csvText);
+    console.log(`Parsed ${parsedData.length} records from CSV`);
 
-	await Promise.all([
-		...mockData.map(item => tx.objectStore(URL_STORE).put(item)),
-		...mockData
-			//.filter(item => item.result === 1)
-			.map(item => tx.objectStore(HTML_STORE)
-				.put({ simhash: generateSimHash(item.html), url: item.url }))
-	]);
+    // Initialize database
+    const db = await initDB();
+    const tx = db.transaction([URL_STORE, HTML_STORE], 'readwrite');
+    
+    // Prepare batch operations
+    const urlStoreOps = parsedData.map(item => 
+      tx.objectStore(URL_STORE).put({
+        url: item.url,
+        website: item.website,
+        result: parseInt(item.result) || 0
+      })
+    );
 
-	await tx.done;
+    const htmlStoreOps = parsedData
+      .filter(item => item.html_simhash)
+      .map(item => 
+        tx.objectStore(HTML_STORE).put({
+          simhash: item.html_simhash,
+          url: item.url,
+          result: parseInt(item.result) || 0
+        })
+      );
+
+    // Execute all operations
+    await Promise.all([...urlStoreOps, ...htmlStoreOps]);
+    await tx.done;
+    
+    console.log('CSV import completed successfully');
+    return true;
+  } catch (error) {
+    console.error('CSV import failed:', error);
+    return false;
+  }
+}
+
+// CSV Parser
+function parseCSV(csvText) {
+  const lines = [];
+  let currentLine = [];
+  let inQuotes = false;
+  let currentField = '';
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    // Handle quotes
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote inside quoted field
+        currentField += '"';
+        i++; // Skip next quote
+      } else {
+        // Start/end of quoted field
+        inQuotes = !inQuotes;
+      }
+    }
+    // Handle comma (only treat as separator if not in quotes)
+    else if (char === ',' && !inQuotes) {
+      currentLine.push(currentField);
+      currentField = '';
+    }
+    // Handle newline (only treat as line break if not in quotes)
+    else if (char === '\n' && !inQuotes) {
+      currentLine.push(currentField);
+      lines.push(currentLine);
+      currentLine = [];
+      currentField = '';
+    }
+    // Normal character
+    else {
+      currentField += char;
+    }
+  }
+
+  // Add the last field and line
+  if (currentField !== '' || currentLine.length > 0) {
+    currentLine.push(currentField);
+    lines.push(currentLine);
+  }
+
+  // Extract headers and build objects
+  if (lines.length === 0) return [];
+  
+  const headers = lines[0].map(h => h.trim());
+  return lines.slice(1)
+    .map(line => {
+      const obj = {};
+      headers.forEach((header, i) => {
+        obj[header] = i < line.length ? line[i].trim() : '';
+      });
+      return obj;
+    })
+    .filter(row => row.url && Object.values(row).some(val => val !== ''));
 }
 
 // Phishing detection
