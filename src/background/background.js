@@ -126,6 +126,19 @@ async function detectPhishing(url, html) {
 	return { isPhishing: false };
 }
 
+// NOTIFICATION EVENT
+chrome.runtime.onMessage.addListener((request) => {
+	if (request.action === "show-notification") {
+		chrome.notifications.create("reminder", {
+			type: "basic",
+			iconUrl: chrome.runtime.getURL("assets/icon48.png"),
+			title: "Phishing Hunter",
+			message: "WARNING: Phishing website is detected! Please check the authenticity of this website.",
+			priority: 1
+		});
+	}	
+});
+
 // INSTALLATION
 chrome.runtime.onInstalled.addListener(async () => {
 	console.log("Installing...");

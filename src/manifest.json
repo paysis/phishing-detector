@@ -3,12 +3,19 @@
   "name": "Phishing Hunter",
   "version": "0.1",
   "description": "Detects phishing sites locally without sending data to servers.",
-  "permissions": ["activeTab", "storage", "scripting"],
+  "permissions": ["activeTab", "storage", "scripting", "notifications"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/background.dist.js",
     "type": "module"  // Needed for modern JS imports
   },
+  "content_scripts": [
+      {
+        "matches": ["<all_urls>"],
+        "js": ["content.js"],
+        "run_at": "document_end"
+      }
+  ],
   "action": {
     "default_popup": "popup/popup.html",
     "default_icon": {
