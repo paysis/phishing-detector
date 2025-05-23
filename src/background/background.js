@@ -189,10 +189,86 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 	}
 });
 
+async function getGeminiApiKey() {
+	try {
+		const db = await openDB('ExtensionDB', 1);
+		const config = await db.get('config', 'geminiApiKey');
+		return config?.value || null;
+	} catch (err) {
+		console.error(`getGeminiApiKey caught handled: ${err}`);
+		return null;
+	}
+}
+
+async function checkWithGeminiAPI(url, htmlContent) {
+	const apiKey = await getGeminiApiKey();
+	if (!apiKey) {
+	  console.log('No Gemini API key configured');
+	  return { isPhishing: false, method: 'gemini-missing-key' };
+	}
+    try {
+    // Extract the most relevant portion of HTML (first 2000 chars to stay under token limits)
+    const cleanHtml = htmlContent
+      .replace(/<script[^>]*>.*?<\/script>/gis, '')
+      .replace(/<style[^>]*>.*?<\/style>/gis, '')
+      .substring(0, 2000);
+    
+    const prompt = `Analyze this website content and determine if it's a phishing site:
+URL: ${url}
+HTML Content: ${cleanHtml}
+
+Consider these phishing indicators:
+1. Suspicious domain mimicking legitimate sites
+2. Requests for sensitive information
+3. Poor grammar/spelling
+4. Unsecured forms
+5. Mismatched URLs and content
+
+Respond ONLY with "1" for phishing or "0" for legitimate. No other text.`;
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }]
+      })
+    });
+
+	if (!response.ok) {
+		const errorData = await response.json();
+		throw new Error(`API error: ${errorData.error?.message || response.statusText}`);
+	}
+	
+    const data = await response.json();
+    const resultText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!resultText) {
+          console.error('Unexpected API response format:', data);
+          return { isPhishing: false, method: 'gemini-format-error' };
+    }
+    console.log(`Gemini returned raw text result: ${resultText}`);
+    return resultText === '1' ? { isPhishing: true, method: 'gemini' } : { isPhishing: false, method: 'gemini' };
+    
+  } catch (error) {
+    console.error('Gemini API error:', error);
+    return { isPhishing: false, method: 'gemini-error' };
+  }
+}
+
 async function detectPhishing(url, html) {
 	// bloom filter check
 	const hostname = new URL(url).hostname;
-	if (bloomFilter.has(hostname)) {
+	if (!bloomFilter) {
+		console.error("Bloom filter instance is null, retrying...");
+		await initBloomFilter();
+	}
+	
+	if (bloomFilter && bloomFilter.has(hostname)) {
 		console.log("Entered bloom filter check");
 		const db = await initDB();
 		const exists = await db.get(URL_STORE, hostname);
@@ -207,7 +283,19 @@ async function detectPhishing(url, html) {
 		return { isPhishing: true, method: 'simhash' };
 	}
 
-	// TODO: add fine-tuned LLM check
+	// LLM check
+	if (html) {
+		console.log("Gemini check started");
+		const geminiResult = await checkWithGeminiAPI(url, html);
+		if (geminiResult.isPhishing) {
+			console.log("Gemini found phishing");
+			// Add to local db to avoid checking the same site again
+			const db = await initDB();
+			await db.put(URL_STORE, { url: hostname, result: 1 });
+			return geminiResult;
+		}
+	}
+	
 	console.log("No phishing detected!");
 	return { isPhishing: false };
 }
